@@ -98,6 +98,44 @@ Archive anything you manually moved into Finished:
 python transcription_pipeline.py archive-finished
 ```
 
+## Continuous Watching
+
+Start the watcher:
+
+```powershell
+.\Start-Watcher.cmd
+```
+
+Keep that window open while you want the watcher running. It checks `Orders/1 - To Do` repeatedly, processes new orders one at a time, and also archives anything you manually move into `Orders/4 - Finished`.
+
+Check whether it is running:
+
+```powershell
+.\Status-Watcher.cmd
+```
+
+Stop it:
+
+```powershell
+.\Stop-Watcher.cmd
+```
+
+You can also stop it by pressing `Ctrl+C` in the watcher window.
+
+Logs are written to:
+
+```text
+logs/pipeline.log
+logs/watcher.out.log
+logs/watcher.err.log
+```
+
+If an order fails, the watcher writes `error.txt` inside the order folder and moves it to:
+
+```text
+Orders/X - Needs Attention
+```
+
 ## Notes
 
 - Current OpenAI transcription models include `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe-diarize`, and `whisper-1`.

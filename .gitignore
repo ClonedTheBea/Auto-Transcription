@@ -1,5 +1,7 @@
 config.toml
 orders.csv
+watcher.pid
+logs/
 *.zip
 Orders/**/*.mp3
 Orders/**/*.mp4

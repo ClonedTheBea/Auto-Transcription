@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,6 +26,7 @@ class Paths:
     transcribing: Path
     qc: Path
     finished: Path
+    needs_attention: Path
     archive: Path
 
 
@@ -39,6 +41,7 @@ class Settings:
     archive_finished: bool
     zip_finished: bool
     max_upload_mb: int
+    log_path: Path
     spreadsheet_path: Path
     paths: Paths
 
@@ -68,8 +71,13 @@ def load_settings(config_path: Path) -> Settings:
         transcribing=orders_dir / "2 - Transcribing",
         qc=orders_dir / "3 - Quality Control",
         finished=orders_dir / "4 - Finished",
+        needs_attention=orders_dir / "X - Needs Attention",
         archive=orders_dir / "Z - Archived Orders",
     )
+
+    log_path = Path(pipeline.get("log_path", "logs/pipeline.log"))
+    if not log_path.is_absolute():
+        log_path = config_path.parent / log_path
 
     spreadsheet_path = Path(spreadsheet.get("path", "orders.csv"))
     if not spreadsheet_path.is_absolute():
@@ -85,6 +93,7 @@ def load_settings(config_path: Path) -> Settings:
         archive_finished=bool(pipeline.get("archive_finished", True)),
         zip_finished=bool(pipeline.get("zip_finished", True)),
         max_upload_mb=int(pipeline.get("max_upload_mb", 24)),
+        log_path=log_path,
         spreadsheet_path=spreadsheet_path,
         paths=paths,
     )
@@ -96,9 +105,21 @@ def ensure_layout(settings: Settings) -> None:
         settings.paths.transcribing,
         settings.paths.qc,
         settings.paths.finished,
+        settings.paths.needs_attention,
         settings.paths.archive,
     ):
         path.mkdir(parents=True, exist_ok=True)
+    settings.log_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def log(settings: Settings, message: str, level: str = "INFO") -> None:
+    line = f"{datetime.now().isoformat(timespec='seconds')} [{level}] {message}"
+    with settings.log_path.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+    try:
+        print(line, flush=True)
+    except OSError:
+        pass
 
 
 def next_order(todo: Path) -> Path | None:
@@ -302,22 +323,44 @@ def process_one(settings: Settings) -> bool:
         return False
 
     working = move_order(order, settings.paths.transcribing)
-    metadata = read_metadata(working)
-    metadata["folder"] = str(working)
-    metadata["status"] = "transcribing"
-    write_metadata(working, metadata)
+    log(settings, f"Started order: {working.name}")
+    try:
+        metadata = read_metadata(working)
+        metadata["folder"] = str(working)
+        metadata["status"] = "transcribing"
+        write_metadata(working, metadata)
 
-    audio = find_audio(working)
-    prepared = prepare_audio(audio, working, settings.max_upload_mb)
-    transcript = transcribe(prepared, settings)
-    write_transcript(working, transcript, metadata)
+        audio = find_audio(working)
+        prepared = prepare_audio(audio, working, settings.max_upload_mb)
+        transcript = transcribe(prepared, settings)
+        write_transcript(working, transcript, metadata)
 
-    metadata["status"] = "quality_control"
-    qc_dir = move_order(working, settings.paths.qc)
-    metadata["folder"] = str(qc_dir)
-    write_metadata(qc_dir, metadata)
-    append_spreadsheet(settings.spreadsheet_path, metadata, "quality_control")
+        metadata["status"] = "quality_control"
+        qc_dir = move_order(working, settings.paths.qc)
+        metadata["folder"] = str(qc_dir)
+        write_metadata(qc_dir, metadata)
+        append_spreadsheet(settings.spreadsheet_path, metadata, "quality_control")
+        log(settings, f"Moved order to Quality Control: {qc_dir.name}")
+    except Exception as exc:
+        fail_order(settings, working, exc)
     return True
+
+
+def fail_order(settings: Settings, order_dir: Path, exc: Exception) -> None:
+    message = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    (order_dir / "error.txt").write_text(message, encoding="utf-8")
+    try:
+        metadata = read_metadata(order_dir)
+    except Exception:
+        metadata = infer_metadata(order_dir)
+    metadata["status"] = "needs_attention"
+    metadata["folder"] = str(order_dir)
+    write_metadata(order_dir, metadata)
+    failed = move_order(order_dir, settings.paths.needs_attention)
+    metadata["folder"] = str(failed)
+    write_metadata(failed, metadata)
+    append_spreadsheet(settings.spreadsheet_path, metadata, "needs_attention")
+    log(settings, f"Moved order to Needs Attention: {failed.name}. Error: {exc}", "ERROR")
 
 
 def zip_folder(folder: Path) -> Path:
@@ -349,15 +392,26 @@ def archive_finished(settings: Settings) -> int:
         write_metadata(archived, metadata)
         append_spreadsheet(settings.spreadsheet_path, metadata, "archived")
         count += 1
+        log(settings, f"Archived finished order: {archived.name}")
     return count
 
 
 def watch(settings: Settings) -> None:
     ensure_layout(settings)
+    log(settings, f"Watcher started. Polling every {settings.poll_seconds} seconds.")
     while True:
-        processed = process_one(settings)
-        if settings.archive_finished:
-            archive_finished(settings)
+        processed = False
+        try:
+            processed = process_one(settings)
+        except Exception as exc:
+            log(settings, f"Unhandled processing error: {exc}", "ERROR")
+            log(settings, traceback.format_exc(), "ERROR")
+        try:
+            if settings.archive_finished:
+                archive_finished(settings)
+        except Exception as exc:
+            log(settings, f"Archive error: {exc}", "ERROR")
+            log(settings, traceback.format_exc(), "ERROR")
         if not processed:
             time.sleep(settings.poll_seconds)
 

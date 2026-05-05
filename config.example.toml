@@ -11,6 +11,7 @@ poll_seconds = 30
 archive_finished = true
 zip_finished = true
 max_upload_mb = 24
+log_path = "logs/pipeline.log"
 
 [spreadsheet]
 path = "orders.csv"
