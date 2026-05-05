@@ -1,0 +1,14 @@
+[openai]
+model = "gpt-4o-transcribe"
+language = ""
+prompt = ""
+
+[pipeline]
+orders_dir = "Orders"
+poll_seconds = 30
+archive_finished = true
+zip_finished = true
+max_upload_mb = 24
+
+[spreadsheet]
+path = "orders.csv"
