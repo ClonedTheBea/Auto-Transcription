@@ -1,5 +1,7 @@
 [openai]
 model = "gpt-4o-transcribe"
+diarization_model = "gpt-4o-transcribe-diarize"
+speaker_labels = false
 language = ""
 prompt = ""
 

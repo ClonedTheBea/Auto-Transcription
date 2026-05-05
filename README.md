@@ -55,6 +55,29 @@ Example `order.json`:
 
 If `order.json` is missing, the script will infer the order number from the folder name and leave the money fields blank.
 
+## Speaker Labels
+
+To identify different speakers, edit `config.toml`:
+
+```toml
+[openai]
+model = "gpt-4o-transcribe"
+diarization_model = "gpt-4o-transcribe-diarize"
+speaker_labels = true
+language = ""
+prompt = ""
+```
+
+When enabled, the script requests diarized JSON from OpenAI and formats the transcript as:
+
+```text
+Speaker 1: Hello, thanks for joining.
+
+Speaker 2: No problem, happy to help.
+```
+
+The raw API response is also saved at `transcripts/transcription.raw.json`.
+
 ## Commands
 
 Process the oldest To Do order:
@@ -78,6 +101,7 @@ python transcription_pipeline.py archive-finished
 ## Notes
 
 - Current OpenAI transcription models include `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe-diarize`, and `whisper-1`.
+- Speaker labels use `gpt-4o-transcribe-diarize` with `response_format = "diarized_json"` and automatic chunking.
 - The OpenAI transcription endpoint supports common audio formats including `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, and `webm`.
 - The public docs list a 25 MB upload limit for transcription files, so the default config keeps converted audio under 24 MB.
 - Delivery back to Fiverr is deliberately not automated in this first pass because that depends on Fiverr account permissions and policy.

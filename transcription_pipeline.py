@@ -31,6 +31,8 @@ class Paths:
 @dataclass(frozen=True)
 class Settings:
     openai_model: str
+    diarization_model: str
+    speaker_labels: bool
     language: str | None
     prompt: str | None
     poll_seconds: int
@@ -75,6 +77,8 @@ def load_settings(config_path: Path) -> Settings:
 
     return Settings(
         openai_model=openai.get("model", "gpt-4o-transcribe"),
+        diarization_model=openai.get("diarization_model", "gpt-4o-transcribe-diarize"),
+        speaker_labels=bool(openai.get("speaker_labels", False)),
         language=openai.get("language") or None,
         prompt=openai.get("prompt") or None,
         poll_seconds=int(pipeline.get("poll_seconds", 30)),
@@ -183,17 +187,20 @@ def prepare_audio(source: Path, order_dir: Path, max_upload_mb: int) -> Path:
     return output
 
 
-def transcribe(audio_path: Path, settings: Settings) -> str:
+def transcribe(audio_path: Path, settings: Settings) -> dict[str, Any]:
     from openai import OpenAI
 
     client = OpenAI()
     request: dict[str, Any] = {
-        "model": settings.openai_model,
+        "model": settings.diarization_model if settings.speaker_labels else settings.openai_model,
         "file": audio_path.open("rb"),
     }
     if settings.language:
         request["language"] = settings.language
-    if settings.prompt:
+    if settings.speaker_labels:
+        request["response_format"] = "diarized_json"
+        request["chunking_strategy"] = "auto"
+    elif settings.prompt:
         request["prompt"] = settings.prompt
 
     try:
@@ -201,16 +208,61 @@ def transcribe(audio_path: Path, settings: Settings) -> str:
     finally:
         request["file"].close()
 
-    return result.text
+    return transcription_to_dict(result)
 
 
-def write_transcript(order_dir: Path, transcript: str, metadata: dict[str, Any]) -> None:
+def transcription_to_dict(result: Any) -> dict[str, Any]:
+    if hasattr(result, "model_dump"):
+        return result.model_dump()
+    if isinstance(result, dict):
+        return result
+    return {"text": str(result)}
+
+
+def speaker_name(label: str, speaker_map: dict[str, str]) -> str:
+    if label not in speaker_map:
+        speaker_map[label] = f"Speaker {len(speaker_map) + 1}"
+    return speaker_map[label]
+
+
+def format_transcript(transcription: dict[str, Any]) -> str:
+    segments = transcription.get("segments") or []
+    if not segments:
+        return str(transcription.get("text", "")).strip()
+
+    speaker_map: dict[str, str] = {}
+    lines: list[str] = []
+    current_speaker = ""
+    current_text: list[str] = []
+
+    for segment in segments:
+        label = str(segment.get("speaker", "unknown"))
+        speaker = speaker_name(label, speaker_map)
+        text = str(segment.get("text", "")).strip()
+        if not text:
+            continue
+        if speaker != current_speaker and current_text:
+            lines.append(f"{current_speaker}: {' '.join(current_text)}")
+            current_text = []
+        current_speaker = speaker
+        current_text.append(text)
+
+    if current_text:
+        lines.append(f"{current_speaker}: {' '.join(current_text)}")
+
+    return "\n\n".join(lines).strip()
+
+
+def write_transcript(order_dir: Path, transcription: dict[str, Any], metadata: dict[str, Any]) -> None:
     transcript_dir = order_dir / "transcripts"
     transcript_dir.mkdir(exist_ok=True)
     title = metadata.get("order_number") or order_dir.name
-    text = transcript.strip() + "\n"
+    text = format_transcript(transcription) + "\n"
     (transcript_dir / "transcript.txt").write_text(text, encoding="utf-8")
     (transcript_dir / "transcript.md").write_text(f"# Transcript {title}\n\n{text}", encoding="utf-8")
+    with (transcript_dir / "transcription.raw.json").open("w", encoding="utf-8") as handle:
+        json.dump(transcription, handle, indent=2)
+        handle.write("\n")
 
 
 def append_spreadsheet(path: Path, metadata: dict[str, Any], status: str) -> None:
